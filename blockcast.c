@@ -6,15 +6,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define GS 8      /* grid size */
-#define CELL 7    /* pixels per grid cell (6 filled + 1 gap) */
-#define GX 1      /* grid x origin */
-#define GY 3      /* grid y origin */
-#define PX 62     /* right panel x */
-#define PCELL 3   /* preview cell pixels (reduced to fit tall pieces) */
-#define HAND 3    /* pieces in hand */
-#define NTYPES 19 /* piece type count */
-#define MAX_DIM 5 /* max piece width or height */
+#define GS 8       /* grid size */
+#define CELL 7     /* pixels per grid cell (6 filled + 1 gap) */
+#define GX 1       /* grid x origin */
+#define GY 3       /* grid y origin */
+#define PX 62      /* right panel x */
+#define PCELL 3    /* preview cell pixels (reduced to fit tall pieces) */
+#define HAND 3     /* pieces in hand */
+#define NTYPES 19  /* piece type count */
+#define MAX_DIM 5  /* max piece width or height */
 #define PREV_Y0 20 /* preview column start y */
 #define PREV_GAP 3 /* gap between preview pieces */
 
@@ -198,9 +198,78 @@ static bool clear_lines(Game *g) {
   return false;
 }
 
+/* Score a piece type by its best placement on the current board.
+   Higher = more useful (completes lines, fills near-full rows/cols). */
+static uint8_t score_piece_type(const Game *g, uint8_t type) {
+  const PieceDef *p = &pdefs[type];
+  uint8_t best = 0;
+  for (int8_t y = 0; y <= GS - p->h; y++) {
+    for (int8_t x = 0; x <= GS - p->w; x++) {
+      if (!can_place(g, p, x, y))
+        continue;
+      /* simulate placement */
+      uint8_t temp[GS];
+      memcpy(temp, g->grid, GS);
+      for (uint8_t r = 0; r < p->h; r++)
+        temp[y + r] |= (p->rows[r] << x);
+      /* count completed lines */
+      uint8_t lines = 0;
+      for (uint8_t row = 0; row < GS; row++)
+        if (temp[row] == 0xFF)
+          lines++;
+      for (uint8_t col = 0; col < GS; col++) {
+        bool full = true;
+        for (uint8_t row = 0; row < GS; row++) {
+          if (!(temp[row] & (1 << col))) {
+            full = false;
+            break;
+          }
+        }
+        if (full)
+          lines++;
+      }
+      /* count near-full rows/cols (6+ of 8 filled) */
+      uint8_t near = 0;
+      for (uint8_t row = 0; row < GS; row++)
+        if (count_bits(temp[row]) >= 6 && temp[row] != 0xFF)
+          near++;
+      for (uint8_t col = 0; col < GS; col++) {
+        uint8_t cnt = 0;
+        for (uint8_t row = 0; row < GS; row++)
+          if (temp[row] & (1 << col))
+            cnt++;
+        if (cnt >= 6 && cnt < 8)
+          near++;
+      }
+      uint8_t s = lines * 10 + near;
+      if (s > best)
+        best = s;
+    }
+  }
+  return best;
+}
+
 static void new_hand(Game *g) {
+  /* score every piece type against current board */
+  uint16_t weights[NTYPES];
+  uint16_t total = 0;
+  for (uint8_t t = 0; t < NTYPES; t++) {
+    uint8_t s = score_piece_type(g, t);
+    weights[t] = 3 + s; /* base weight 3 keeps randomness, score adds bias */
+    total += weights[t];
+  }
+  /* weighted random selection per hand slot */
   for (uint8_t i = 0; i < HAND; i++) {
-    g->hand[i] = rand() % NTYPES;
+    uint16_t r = rand() % total;
+    uint16_t cumul = 0;
+    g->hand[i] = 0; /* fallback */
+    for (uint8_t t = 0; t < NTYPES; t++) {
+      cumul += weights[t];
+      if (r < cumul) {
+        g->hand[i] = t;
+        break;
+      }
+    }
   }
 }
 
@@ -293,6 +362,43 @@ static void draw_callback(Canvas *canvas, void *ctx) {
         } else {
           /* just an outline for invalid positions */
           canvas_draw_frame(canvas, px, py, CELL - 1, CELL - 1);
+        }
+      }
+    }
+    /* clear-preview: highlight rows/cols that would vanish */
+    if (valid) {
+      uint8_t temp[GS];
+      memcpy(temp, g->grid, GS);
+      for (uint8_t r = 0; r < p->h; r++)
+        temp[g->cy + r] |= (p->rows[r] << g->cx);
+      uint8_t clr_rows = 0, clr_cols = 0;
+      for (uint8_t yy = 0; yy < GS; yy++)
+        if (temp[yy] == 0xFF)
+          clr_rows |= (1 << yy);
+      for (uint8_t xx = 0; xx < GS; xx++) {
+        bool full = true;
+        for (uint8_t yy = 0; yy < GS; yy++) {
+          if (!(temp[yy] & (1 << xx))) {
+            full = false;
+            break;
+          }
+        }
+        if (full)
+          clr_cols |= (1 << xx);
+      }
+      if (clr_rows || clr_cols) {
+        /* checkerboard XOR over cells in clearing lines */
+        for (uint8_t yy = 0; yy < GS; yy++) {
+          for (uint8_t xx = 0; xx < GS; xx++) {
+            if (!((clr_rows & (1 << yy)) || (clr_cols & (1 << xx))))
+              continue;
+            uint8_t px = GX + xx * CELL;
+            uint8_t py = GY + yy * CELL;
+            for (uint8_t dy = 0; dy < CELL - 1; dy++)
+              for (uint8_t dx = 0; dx < CELL - 1; dx++)
+                if ((dx + dy) & 1)
+                  canvas_draw_dot(canvas, px + dx, py + dy);
+          }
         }
       }
     }
