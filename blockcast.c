@@ -1,6 +1,8 @@
 #include <furi.h>
 #include <gui/gui.h>
 #include <input/input.h>
+#include <notification/notification.h>
+#include <notification/notification_messages.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,10 +11,12 @@
 #define GX 1      /* grid x origin */
 #define GY 3      /* grid y origin */
 #define PX 62     /* right panel x */
-#define PCELL 4   /* preview cell pixels */
+#define PCELL 3   /* preview cell pixels (reduced to fit tall pieces) */
 #define HAND 3    /* pieces in hand */
 #define NTYPES 19 /* piece type count */
 #define MAX_DIM 5 /* max piece width or height */
+#define PREV_Y0 20 /* preview column start y */
+#define PREV_GAP 3 /* gap between preview pieces */
 
 typedef enum {
   PhaseSelect,
@@ -51,6 +55,62 @@ static const PieceDef pdefs[NTYPES] = {
     {3, 3, {0x01, 0x01, 0x07}}, /* 17: bigL2 */
     {3, 3, {0x04, 0x04, 0x07}}, /* 18: bigJ2 */
 };
+
+/* ── Sound sequences ─────────────────────────────────────────────── */
+
+static const NotificationSequence seq_move = {
+    &message_force_speaker_volume_setting_1f,
+    &message_note_c7,
+    &message_delay_10,
+    &message_sound_off,
+    NULL,
+};
+
+static const NotificationSequence seq_place = {
+    &message_force_speaker_volume_setting_1f,
+    &message_note_e6,
+    &message_delay_50,
+    &message_sound_off,
+    NULL,
+};
+
+static const NotificationSequence seq_clear = {
+    &message_force_speaker_volume_setting_1f,
+    &message_note_c6,
+    &message_delay_50,
+    &message_note_e6,
+    &message_delay_50,
+    &message_note_g6,
+    &message_delay_100,
+    &message_sound_off,
+    NULL,
+};
+
+static const NotificationSequence seq_invalid = {
+    &message_force_speaker_volume_setting_1f,
+    &message_note_c5,
+    &message_delay_25,
+    &message_sound_off,
+    &message_delay_25,
+    &message_note_c5,
+    &message_delay_25,
+    &message_sound_off,
+    NULL,
+};
+
+static const NotificationSequence seq_gameover = {
+    &message_force_speaker_volume_setting_1f,
+    &message_note_g5,
+    &message_delay_100,
+    &message_note_e5,
+    &message_delay_100,
+    &message_note_c5,
+    &message_delay_250,
+    &message_sound_off,
+    NULL,
+};
+
+/* ── Game state ───────────────────────────────────────────────────── */
 
 typedef struct {
   uint8_t grid[GS];   /* row bitmasks (8 rows, 8 bits each) */
@@ -94,7 +154,7 @@ static void place_piece(Game *g, const PieceDef *p, int8_t ox, int8_t oy) {
   g->score += cells;
 }
 
-static void clear_lines(Game *g) {
+static bool clear_lines(Game *g) {
   uint8_t cleared = 0;
   uint8_t full_rows = 0;
   uint8_t full_cols = 0;
@@ -133,7 +193,9 @@ static void clear_lines(Game *g) {
 
   if (cleared > 0) {
     g->score += (uint32_t)10 * cleared * cleared;
+    return true;
   }
+  return false;
 }
 
 static void new_hand(Game *g) {
@@ -184,6 +246,7 @@ static void sel_first_available(Game *g) {
   }
 }
 
+/* ── Drawing ──────────────────────────────────────────────────────── */
 
 static void draw_callback(Canvas *canvas, void *ctx) {
   Game *g = ctx;
@@ -191,8 +254,10 @@ static void draw_callback(Canvas *canvas, void *ctx) {
   canvas_clear(canvas);
   canvas_set_color(canvas, ColorBlack);
 
+  /* grid border */
   canvas_draw_frame(canvas, GX - 1, GY - 1, GS * CELL + 2, GS * CELL + 2);
 
+  /* grid cells */
   for (uint8_t y = 0; y < GS; y++) {
     for (uint8_t x = 0; x < GS; x++) {
       uint8_t px = GX + x * CELL;
@@ -205,60 +270,70 @@ static void draw_callback(Canvas *canvas, void *ctx) {
     }
   }
 
+  /* ghost piece (XOR so it's visible over both empty and filled cells) */
   if (g->phase == PhasePlace && g->hand[g->sel] != 0xFF) {
     const PieceDef *p = &pdefs[g->hand[g->sel]];
     bool valid = can_place(g, p, g->cx, g->cy);
 
+    canvas_set_color(canvas, ColorXOR);
     for (uint8_t r = 0; r < p->h; r++) {
       for (uint8_t c = 0; c < p->w; c++) {
         if (!piece_bit(p, c, r))
           continue;
-        uint8_t px = GX + (g->cx + c) * CELL;
-        uint8_t py = GY + (g->cy + r) * CELL;
+        int8_t gx = g->cx + (int8_t)c;
+        int8_t gy = g->cy + (int8_t)r;
+        /* clip to grid bounds */
+        if (gx < 0 || gx >= GS || gy < 0 || gy >= GS)
+          continue;
+        uint8_t px = GX + gx * CELL;
+        uint8_t py = GY + gy * CELL;
         if (valid) {
-          canvas_draw_frame(canvas, px, py, CELL - 1, CELL - 1);
-          for (uint8_t dy = 1; dy < CELL - 2; dy += 2)
-            for (uint8_t dx = 1; dx < CELL - 2; dx += 2)
-              canvas_draw_dot(canvas, px + dx, py + dy);
+          /* solid XOR box: inverts whatever is underneath */
+          canvas_draw_box(canvas, px, py, CELL - 1, CELL - 1);
         } else {
-          canvas_draw_dot(canvas, px, py);
-          canvas_draw_dot(canvas, px + CELL - 2, py);
-          canvas_draw_dot(canvas, px, py + CELL - 2);
-          canvas_draw_dot(canvas, px + CELL - 2, py + CELL - 2);
+          /* just an outline for invalid positions */
+          canvas_draw_frame(canvas, px, py, CELL - 1, CELL - 1);
         }
       }
     }
+    canvas_set_color(canvas, ColorBlack);
   }
 
+  /* score */
   canvas_set_font(canvas, FontSecondary);
   canvas_draw_str(canvas, PX, 7, "SCORE");
   char buf[12];
   snprintf(buf, sizeof(buf), "%lu", (unsigned long)g->score);
   canvas_draw_str(canvas, PX, 17, buf);
 
-  static const uint8_t prev_y[HAND] = {22, 38, 54};
+  /* piece preview column (dynamically positioned) */
+  uint8_t cur_y = PREV_Y0;
   for (uint8_t i = 0; i < HAND; i++) {
     if (g->hand[i] == 0xFF)
       continue;
     const PieceDef *p = &pdefs[g->hand[i]];
-    uint8_t bx = PX + 6;
-    uint8_t by = prev_y[i];
+    uint8_t bx = PX + 4;
 
+    /* selection highlight */
     if (g->phase == PhaseSelect && i == g->sel) {
-      canvas_draw_frame(canvas, bx - 2, by - 2, p->w * PCELL + 3,
+      canvas_draw_frame(canvas, bx - 2, cur_y - 2, p->w * PCELL + 3,
                         p->h * PCELL + 3);
     }
 
+    /* draw piece preview */
     for (uint8_t r = 0; r < p->h; r++) {
       for (uint8_t c = 0; c < p->w; c++) {
         if (piece_bit(p, c, r)) {
-          canvas_draw_box(canvas, bx + c * PCELL, by + r * PCELL, PCELL - 1,
+          canvas_draw_box(canvas, bx + c * PCELL, cur_y + r * PCELL, PCELL - 1,
                           PCELL - 1);
         }
       }
     }
+
+    cur_y += p->h * PCELL + PREV_GAP;
   }
 
+  /* game over overlay */
   if (g->phase == PhaseOver) {
     for (uint8_t y = 14; y < 50; y++)
       for (uint8_t x = 22; x < 106; x++)
@@ -280,12 +355,14 @@ static void draw_callback(Canvas *canvas, void *ctx) {
   furi_mutex_release(g->mutex);
 }
 
+/* ── Input ────────────────────────────────────────────────────────── */
 
 static void input_callback(InputEvent *event, void *ctx) {
   FuriMessageQueue *q = ctx;
   furi_message_queue_put(q, event, FuriWaitForever);
 }
 
+/* ── Main ─────────────────────────────────────────────────────────── */
 
 int32_t blockcast_app(void *p) {
   UNUSED(p);
@@ -294,6 +371,8 @@ int32_t blockcast_app(void *p) {
   Game *g = malloc(sizeof(Game));
   g->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
   game_init(g);
+
+  NotificationApp *notif = furi_record_open(RECORD_NOTIFICATION);
 
   FuriMessageQueue *queue = furi_message_queue_alloc(8, sizeof(InputEvent));
 
@@ -318,7 +397,7 @@ int32_t blockcast_app(void *p) {
     switch (g->phase) {
     case PhaseSelect:
       switch (ev.key) {
-      case InputKeyLeft:
+      case InputKeyUp:
         for (uint8_t i = 1; i < HAND; i++) {
           int8_t idx = (g->sel - i + HAND) % HAND;
           if (g->hand[idx] != 0xFF) {
@@ -326,8 +405,9 @@ int32_t blockcast_app(void *p) {
             break;
           }
         }
+        notification_message(notif, &seq_move);
         break;
-      case InputKeyRight:
+      case InputKeyDown:
         for (uint8_t i = 1; i < HAND; i++) {
           int8_t idx = (g->sel + i) % HAND;
           if (g->hand[idx] != 0xFF) {
@@ -335,6 +415,7 @@ int32_t blockcast_app(void *p) {
             break;
           }
         }
+        notification_message(notif, &seq_move);
         break;
       case InputKeyOk:
         if (g->hand[g->sel] != 0xFF) {
@@ -342,6 +423,7 @@ int32_t blockcast_app(void *p) {
           g->cx = (GS - pc->w) / 2;
           g->cy = (GS - pc->h) / 2;
           g->phase = PhasePlace;
+          notification_message(notif, &seq_move);
         }
         break;
       case InputKeyBack:
@@ -375,21 +457,31 @@ int32_t blockcast_app(void *p) {
         if (can_place(g, pc, g->cx, g->cy)) {
           place_piece(g, pc, g->cx, g->cy);
           g->hand[g->sel] = 0xFF;
-          clear_lines(g);
+          bool cleared = clear_lines(g);
+
+          if (cleared) {
+            notification_message(notif, &seq_clear);
+          } else {
+            notification_message(notif, &seq_place);
+          }
 
           if (hand_empty(g))
             new_hand(g);
 
           if (!any_move_possible(g)) {
             g->phase = PhaseOver;
+            notification_message(notif, &seq_gameover);
           } else {
             g->phase = PhaseSelect;
             sel_first_available(g);
           }
+        } else {
+          notification_message(notif, &seq_invalid);
         }
         break;
       case InputKeyBack:
         g->phase = PhaseSelect;
+        notification_message(notif, &seq_move);
         break;
       default:
         break;
@@ -400,6 +492,7 @@ int32_t blockcast_app(void *p) {
     case PhaseOver:
       if (ev.key == InputKeyOk) {
         game_init(g);
+        notification_message(notif, &seq_move);
       } else if (ev.key == InputKeyBack) {
         running = false;
       }
@@ -412,6 +505,7 @@ int32_t blockcast_app(void *p) {
 
   gui_remove_view_port(gui, vp);
   furi_record_close(RECORD_GUI);
+  furi_record_close(RECORD_NOTIFICATION);
   view_port_free(vp);
   furi_message_queue_free(queue);
   furi_mutex_free(g->mutex);
