@@ -59,7 +59,6 @@ static const PieceDef pdefs[NTYPES] = {
 /* ── Sound sequences ─────────────────────────────────────────────── */
 
 static const NotificationSequence seq_move = {
-    &message_force_speaker_volume_setting_1f,
     &message_note_c7,
     &message_delay_10,
     &message_sound_off,
@@ -67,7 +66,6 @@ static const NotificationSequence seq_move = {
 };
 
 static const NotificationSequence seq_place = {
-    &message_force_speaker_volume_setting_1f,
     &message_note_e6,
     &message_delay_50,
     &message_sound_off,
@@ -75,7 +73,6 @@ static const NotificationSequence seq_place = {
 };
 
 static const NotificationSequence seq_clear = {
-    &message_force_speaker_volume_setting_1f,
     &message_note_c6,
     &message_delay_50,
     &message_note_e6,
@@ -87,7 +84,6 @@ static const NotificationSequence seq_clear = {
 };
 
 static const NotificationSequence seq_invalid = {
-    &message_force_speaker_volume_setting_1f,
     &message_note_c5,
     &message_delay_25,
     &message_sound_off,
@@ -99,7 +95,6 @@ static const NotificationSequence seq_invalid = {
 };
 
 static const NotificationSequence seq_gameover = {
-    &message_force_speaker_volume_setting_1f,
     &message_note_g5,
     &message_delay_100,
     &message_note_e5,
