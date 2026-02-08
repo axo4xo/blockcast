@@ -4,5 +4,6 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="blockcast_app",
     stack_size=2 * 1024,
+    fap_icon="blockcast_10px.png",
     fap_category="Games",
 )
