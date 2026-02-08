@@ -53,6 +53,3 @@ blockcast.c        — game source (single file)
 application.fam    — Flipper Zero app manifest
 ```
 
-## License
-
-MIT
