@@ -1,5 +1,7 @@
 # Block Cast for Flipper Zero
 
+<img height=400 src="assets/prev.png" />
+
 A Block Blast-inspired puzzle game for the Flipper Zero. Place pieces on an 8x8 grid and clear full rows and columns to score points.
 
 ## How to Play
